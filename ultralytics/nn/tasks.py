@@ -50,6 +50,8 @@ from ultralytics.nn.modules import (
     Detect,
     DWConv,
     DWConvTranspose2d,
+    DySample,
+    EMAc2f,
     Focus,
     GhostBottleneck,
     GhostConv,
@@ -1990,6 +1992,8 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
+            EMA,
+            c2fEMA,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -2103,6 +2107,9 @@ def parse_model(d, ch, verbose=True):
             c2 = args[0]
             c1 = ch[f]
             args = [*args[1:]]
+        elif m is Dysample:
+            c2 = ch[f]
+            args = [c2, *args]
         else:
             c2 = ch[f]
 
