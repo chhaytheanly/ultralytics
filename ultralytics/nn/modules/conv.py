@@ -668,3 +668,41 @@ class Index(nn.Module):
             (torch.Tensor): Selected tensor.
         """
         return x[self.index]
+
+class DySample(nn.Module):
+    def __init__(self, in_channels, scale=2, stride=None, smoothing=False):
+        super().__init__()
+        assert scale > 1
+        self.scale = scale
+        self.stride = stride
+        self.smoothing = smoothing
+
+        self.offset_conv = nn.Conv2d(
+            in_channels, 2 * scale * scale, kernel_size = 1, stride = 1, padding = 0
+        )
+
+        nn.init.constant_(self.offset_conv.weight, 0.0)
+        nn.init.constant_(self.offset_conv.bias, 0.0)
+
+    def forward(self, x):
+        N, C, H, W = x.shape
+        self.s = scale
+
+        y = torch.linspace(-1 + 1/s, 1 - 1/s, H * s, device=x.device)
+        x_l = torch.linspace(-1 + 1/s, 1 - 1/s, W * s, device=x.device)
+        grid_y, grid_x = torch.meshgrid(y, x_l, indexing="ij")
+        grid = torch.stack([grid_x, grid_y], dim=-1)  
+        grid = grid.unsqueeze(0).repeat(N, 1, 1, 1)
+
+        offsets = self.offset_conv(x)  
+        offsets = offsets.view(N, 2, s, s, H, W)
+        offsets = offsets.permute(0, 1, 4, 2, 5, 3).contiguous()
+        offsets = offsets.view(N, 2, H * s, W * s)
+        offsets = offsets.permute(0, 2, 3, 1)  
+
+        grid = grid + offsets / (H * s)
+
+        out = F.grid_sample(x, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
+        return out
+
+        
