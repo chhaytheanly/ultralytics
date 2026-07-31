@@ -16,6 +16,7 @@ __all__ = (
     "Conv",
     "Conv2",
     "ConvTranspose",
+    "DySample",
     "DWConv",
     "DWConvTranspose2d",
     "Focus",
