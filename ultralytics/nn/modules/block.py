@@ -2082,7 +2082,7 @@ class EMA(nn.Module):
 
     def __init__(self, channels, factor=8):
         super().__init__()
-        self.group = factor
+        self.groups = factor
         assert channels // self.groups > 0
         self.softmax = nn.Softmax(-1)
         self.agp = nn.AdaptiveAvgPool2d((1, 1))
