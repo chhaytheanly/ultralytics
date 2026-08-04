@@ -2120,10 +2120,10 @@ class EMAc2f(C2f):
     """
     def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
         super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
+        self.c = int(c2 * e)
         self.ema = EMA(c2, factor=8)
-        # Replace internal bottlenecks with GhostBottleneck
         self.m = nn.ModuleList(
-            GhostBottleneck(int(c2 * e), c2) for _ in range(n)
+            GhostBottleneck(self.c, self.c) for _ in range(n)
         )
 
     def forward(self, x):
