@@ -1977,6 +1977,7 @@ def parse_model(d, ch, verbose=True):
             C3k2,
             RepNCSPELAN4,
             ELAN1,
+            EMAc2f,
             ADown,
             AConv,
             SPPELAN,
@@ -2013,6 +2014,7 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             C2PSA,
             A2C2f,
+            EMAc2f,
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
