@@ -41,6 +41,7 @@ __all__ = (
     "CBFuse",
     "CBLinear",
     "ContrastiveHead",
+    "EMAc2f",
     "GhostBottleneck",
     "HGBlock",
     "HGStem",
