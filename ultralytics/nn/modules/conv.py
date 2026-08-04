@@ -671,39 +671,66 @@ class Index(nn.Module):
         return x[self.index]
 
 class DySample(nn.Module):
-    def __init__(self, in_channels, scale=2, stride=None, smoothing=False):
-        super().__init__()
-        assert scale > 1
-        self.scale = scale
-        self.stride = stride
-        self.smoothing = smoothing
+    """Dynamic Sampling Upsampling Module.
 
+    Lightweight replacement for nn.Upsample.
+
+    Input:
+        x: Tensor of shape (B, C, H, W)
+
+    Output:
+        Tensor of shape (B, C, H * scale, W * scale)
+    """
+
+    def __init__(self, c1: int, scale: int = 2):
+        super().__init__()
+        assert scale > 1, "Scale factor must be greater than 1."
+
+        self.scale = scale
         self.offset_conv = nn.Conv2d(
-            in_channels, 2 * scale * scale, kernel_size = 1, stride = 1, padding = 0
+            in_channels=c1,
+            out_channels=2 * scale * scale,
+            kernel_size=1,
+            stride=1,
+            padding=0,
         )
 
-        nn.init.constant_(self.offset_conv.weight, 0.0)
-        nn.init.constant_(self.offset_conv.bias, 0.0)
+        # Initialize to zero so offsets start at identity/normal interpolation
+        nn.init.zeros_(self.offset_conv.weight)
+        nn.init.zeros_(self.offset_conv.bias)
 
-    def forward(self, x):
-        N, C, H, W = x.shape
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
         s = self.scale
 
-        y = torch.linspace(-1 + 1/s, 1 - 1/s, H * s, device=x.device)
-        x_l = torch.linspace(-1 + 1/s, 1 - 1/s, W * s, device=x.device)
-        grid_y, grid_x = torch.meshgrid(y, x_l, indexing="ij")
-        grid = torch.stack([grid_x, grid_y], dim=-1)  
-        grid = grid.unsqueeze(0).repeat(N, 1, 1, 1)
+        # Generate offsets: (B, 2*s*s, H, W)
+        offset = self.offset_conv(x)
 
-        offsets = self.offset_conv(x)  
-        offsets = offsets.view(N, 2, s, s, H, W)
-        offsets = offsets.permute(0, 1, 4, 2, 5, 3).contiguous()
-        offsets = offsets.view(N, 2, H * s, W * s)
-        offsets = offsets.permute(0, 2, 3, 1)  
+        # Rearrange offsets: (B, 2*s*s, H, W) -> (B, 2, H*s, W*s)
+        offset = F.pixel_shuffle(offset, s)
 
-        grid = grid + offsets / (H * s)
+        # Permute shape to: (B, H*s, W*s, 2)
+        offset = offset.permute(0, 2, 3, 1)
 
-        out = F.grid_sample(x, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
+        # Create normalized base sampling grid [-1, 1]
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1, 1, H * s, device=x.device),
+            torch.linspace(-1, 1, W * s, device=x.device),
+            indexing="ij",
+        )
+        grid = torch.stack([xx, yy], dim=-1)
+        grid = grid.unsqueeze(0).repeat(B, 1, 1, 1)
+
+        # Apply learned offsets bounded to pixel scale for stability
+        grid = grid + torch.tanh(offset) * (2.0 / max(H, W))
+
+        # Dynamic bilinear sampling
+        out = F.grid_sample(
+            x,
+            grid,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=True,
+        )
+
         return out
-
-        
