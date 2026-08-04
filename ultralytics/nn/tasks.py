@@ -1978,6 +1978,7 @@ def parse_model(d, ch, verbose=True):
             C3k2,
             RepNCSPELAN4,
             ELAN1,
+            EMA,
             EMAc2f,
             ADown,
             AConv,
