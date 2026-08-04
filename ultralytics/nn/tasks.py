@@ -1997,7 +1997,6 @@ def parse_model(d, ch, verbose=True):
             A2C2f,
             DySample,
             EMAc2f,
-            c2fEMA,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
