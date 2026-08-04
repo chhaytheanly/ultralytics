@@ -1995,7 +1995,8 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
-            EMA,
+            DySample,
+            EMAc2f,
             c2fEMA,
         }
     )
@@ -2016,6 +2017,7 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             C2PSA,
             A2C2f,
+            DySample,
             EMAc2f,
         }
     )
