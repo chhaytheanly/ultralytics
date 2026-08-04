@@ -51,6 +51,7 @@ from ultralytics.nn.modules import (
     DWConv,
     DWConvTranspose2d,
     DySample,
+    EMA,
     EMAc2f,
     Focus,
     GhostBottleneck,
