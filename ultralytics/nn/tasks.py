@@ -2112,7 +2112,7 @@ def parse_model(d, ch, verbose=True):
             c2 = args[0]
             c1 = ch[f]
             args = [*args[1:]]
-        elif m is Dysample:
+        elif m is DySample:
             c2 = ch[f]
             args = [c2, *args]
         else:
