@@ -687,7 +687,7 @@ class DySample(nn.Module):
 
     def forward(self, x):
         N, C, H, W = x.shape
-        self.s = scale
+        s = self.scale
 
         y = torch.linspace(-1 + 1/s, 1 - 1/s, H * s, device=x.device)
         x_l = torch.linspace(-1 + 1/s, 1 - 1/s, W * s, device=x.device)
