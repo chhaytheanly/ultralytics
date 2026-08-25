@@ -714,8 +714,8 @@ class DySample(nn.Module):
 
         # Create normalized base sampling grid [-1, 1]
         yy, xx = torch.meshgrid(
-            torch.linspace(-1, 1, H * s, device=x.device),
-            torch.linspace(-1, 1, W * s, device=x.device),
+            torch.linspace(-1, 1, H * s, device=x.device, dtype=x.dtype),
+            torch.linspace(-1, 1, W * s, device=x.device, dtype=x.dtype),
             indexing="ij",
         )
         grid = torch.stack([xx, yy], dim=-1)
