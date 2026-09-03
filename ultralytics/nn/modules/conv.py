@@ -737,7 +737,7 @@ class DSConv(nn.Module):
         offset = offset.reshape(b, 2 * self.k * self.k, h, w)
         mask = self.mask_conv(x).sigmoid() 
         
-        offset = offset.view(b, 2, self.k, self.k, h, w).permute(0, 4, 5, 2, 3, 1)
+        offset = offset.reshape(b, 2, self.k, self.k, h, w).permute(0, 4, 5, 2, 3, 1)
         offset = offset.reshape(b, h, w, self.k * self.k, 2)
   
         grid_y, grid_x = torch.meshgrid(
@@ -745,20 +745,20 @@ class DSConv(nn.Module):
             torch.arange(w, device=x.device, dtype=x.dtype),
             indexing='ij'
         )
-        grid = torch.stack((grid_x, grid_y), dim=-1).view(1, h, w, 1, 2).expand(b, -1, -1, self.k * self.k, -1)
+        grid = torch.stack((grid_x, grid_y), dim=-1).reshape(1, h, w, 1, 2).expand(b, -1, -1, self.k * self.k, -1)
         
         grid = grid + offset
         grid[..., 0] = (grid[..., 0] / max(w - 1, 1)) * 2 - 1
         grid[..., 1] = (grid[..., 1] / max(h - 1, 1)) * 2 - 1
         
-        grid = grid.view(b, h * w * self.k * self.k, 1, 2)
+        grid = grid.reshape(b, h * w * self.k * self.k, 1, 2)
         sampled = F.grid_sample(x, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
         
-        sampled = sampled.view(b, c, h, w, self.k * self.k).permute(0, 4, 1, 2, 3)
+        sampled = sampled.reshape(b, c, h, w, self.k * self.k).permute(0, 4, 1, 2, 3)
         sampled = sampled.reshape(b, c * self.k * self.k, h, w)
 
-        mask = mask.view(b, self.k * self.k, 1, h, w)
-        sampled = sampled.view(b, self.k * self.k, c, h, w) * mask
+        mask = mask.reshape(b, self.k * self.k, 1, h, w)
+        sampled = sampled.reshape(b, self.k * self.k, c, h, w) * mask
         sampled = sampled.reshape(b, c * self.k * self.k, h, w)
 
         out = self.conv1x1(sampled)
