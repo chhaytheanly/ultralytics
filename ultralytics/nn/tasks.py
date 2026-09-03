@@ -49,7 +49,7 @@ from ultralytics.nn.modules import (
     Depth,
     Detect,
     DSConv,
-    DSConvC2fEMA
+    DSConvC2fEMA,
     DWConv,
     DWConvTranspose2d,
     DySample,
