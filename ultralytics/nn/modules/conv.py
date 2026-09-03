@@ -707,7 +707,7 @@ class DSConv(nn.Module):
     
     def __init__(self, inc, ouc, k=3, morph=0, act=True):
         super().__init__()
-        self.morpj = morph
+        self.morph = morph
         self.k = k
         
         self.offset_conv = nn.Conv2d(inc, 2*k*k, 3, padding=1)
