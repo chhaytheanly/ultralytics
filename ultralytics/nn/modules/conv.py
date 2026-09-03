@@ -710,24 +710,21 @@ class DSConv(nn.Module):
         self.morph = morph
         self.k = k
         
-        self.offset_conv = nn.Conv2d(inc, 2*k*k, 3, padding=1)
-        self.mask_conv = nn.Conv2d(inc, k*k, 3, padding=1)
+        self.offset_conv = nn.Conv2d(inc, 2 * k * k, 3, padding=1)
+        self.mask_conv = nn.Conv2d(inc, k * k, 3, padding=1)
         
         nn.init.zeros_(self.offset_conv.weight)
         nn.init.zeros_(self.offset_conv.bias)
         
-        self.conv = nn.Conv2d(inc, ouc, k, padding=k//2, bias=False)
+        self.conv1x1 = nn.Conv2d(inc * k * k, ouc, 1, bias=False)
         
-        groups = make_divisible(ouc // 4, 8)
-        if groups <= 0: groups = 1
+        groups = max(1, make_divisible(ouc // 4, 8))
         self.gn = nn.GroupNorm(groups, ouc)
         self.act = nn.SiLU() if act else nn.Identity()
         
-     
     def forward(self, x):
         b, c, h, w = x.shape
         offset = self.offset_conv(x)
-        
         offset = offset.reshape(b, 2, self.k, self.k, h, w)
         
         if self.morph == 0: 
@@ -740,10 +737,30 @@ class DSConv(nn.Module):
         offset = offset.reshape(b, 2 * self.k * self.k, h, w)
         mask = self.mask_conv(x).sigmoid() 
         
-        # CUDA deformable convolution operation
-        out = deform_conv2d(
-            x, offset, self.conv.weight, 
-            mask=mask, padding=(self.k//2, self.k//2)
+        offset = offset.view(b, 2, self.k, self.k, h, w).permute(0, 4, 5, 2, 3, 1)
+        offset = offset.reshape(b, h, w, self.k * self.k, 2)
+  
+        grid_y, grid_x = torch.meshgrid(
+            torch.arange(h, device=x.device, dtype=x.dtype),
+            torch.arange(w, device=x.device, dtype=x.dtype),
+            indexing='ij'
         )
+        grid = torch.stack((grid_x, grid_y), dim=-1).view(1, h, w, 1, 2).expand(b, -1, -1, self.k * self.k, -1)
+        
+        grid = grid + offset
+        grid[..., 0] = (grid[..., 0] / max(w - 1, 1)) * 2 - 1
+        grid[..., 1] = (grid[..., 1] / max(h - 1, 1)) * 2 - 1
+        
+        grid = grid.view(b, h * w * self.k * self.k, 1, 2)
+        sampled = F.grid_sample(x, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
+        
+        sampled = sampled.view(b, c, h, w, self.k * self.k).permute(0, 4, 1, 2, 3)
+        sampled = sampled.reshape(b, c * self.k * self.k, h, w)
+
+        mask = mask.view(b, self.k * self.k, 1, h, w)
+        sampled = sampled.view(b, self.k * self.k, c, h, w) * mask
+        sampled = sampled.reshape(b, c * self.k * self.k, h, w)
+
+        out = self.conv1x1(sampled)
         
         return self.act(self.gn(out))
