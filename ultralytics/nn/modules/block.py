@@ -9,7 +9,7 @@ from torch import nn
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
+from .conv import Conv, DSConv, DWConv, GhostConv, LightConv, RepConv, autopad
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -41,7 +41,9 @@ __all__ = (
     "CBFuse",
     "CBLinear",
     "ContrastiveHead",
+    "DSConvC2fEMA",
     "EMAc2f",
+    "GhostDySnakeBottleneck",
     "GhostBottleneck",
     "HGBlock",
     "HGStem",
@@ -2075,6 +2077,25 @@ class RealNVP(nn.Module):
         z, log_det = self.backward_p(x)
         return self.prior.log_prob(z) + log_det
 
+class GhostDySnakeBottleneck(nn.Module):
+    def __init__(self, c1, c2, k=3, s=1): 
+        super().__init__() 
+        c_ = c2 // 2 
+        self.conv = nn.Sequential( 
+            GhostConv(c1, c_, 1, 1),  
+            DSConv(c_, c_, k, morph=0) if s == 1 else nn.Sequential(
+                nn.AvgPool2d(2), DSConv(c_, c_, k, morph=0)
+            ), 
+            GhostConv(c_, c2, 1, 1, act=False), 
+        ) 
+        self.shortcut = ( 
+            nn.Sequential(nn.AvgPool2d(2), Conv(c1, c2, 1, 1, act=False)) if s == 2 else nn.Identity() 
+        ) 
+ 
+    def forward(self, x: torch.Tensor) -> torch.Tensor: 
+        return self.conv(x) + self.shortcut(x) 
+
+
 class EMA(nn.Module):
     """
     Efficient Multi-Scale Attention (EMA)
@@ -2083,68 +2104,65 @@ class EMA(nn.Module):
     "EMA: Efficient Multi-Scale Attention for
      Cross-Model Feature Fusion"
     """
-    def __init__(self, channels, factor=8):
-        super().__init__()
-
-        assert channels % factor == 0, (
-            f"EMA requires channels divisible by factor. "
-            f"Got channels={channels}, factor={factor}"
-        )
-
-        self.groups = factor
-        self.channels = channels
-        self.group_channels = channels // factor
-        self.softmax = nn.Softmax(dim=-1)
-        self.agp = nn.AdaptiveAvgPool2d(1)
-        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
-        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
-        self.conv1x1 = nn.Conv2d(
-            self.group_channels,
-            self.group_channels,
-            kernel_size=1,
-            stride=1,
-            padding=0
-        )
-
-        self.conv3x3 = nn.Conv2d(
-            self.group_channels,
-            self.group_channels,
-            kernel_size=3,
-            stride=1,
-            padding=1
-        )
-
-        self.gn = nn.GroupNorm(
-            num_groups=self.group_channels,
-            num_channels=self.group_channels
-        )
+    def __init__(self, channels, factor=8): 
+        super().__init__() 
+        self.groups = factor 
+        self.group_channels = channels // factor 
+        self.softmax = nn.Softmax(dim=-1) 
+        self.conv1x1 = nn.Conv2d(self.group_channels, self.group_channels, 1) 
+        self.conv3x3 = nn.Conv2d(self.group_channels, self.group_channels, 3, padding=1) 
+        self.gn = nn.GroupNum(self.group_channels, self.group_channels) if hasattr(nn, 'GroupNum') else nn.GroupNorm(self.group_channels // 4, self.group_channels)
 
 
-    def forward(self, x):
-
-        b, c, h, w = x.shape
-        group_x = x.reshape(b * self.groups, self.group_channels, h, w)
-        x_h = self.pool_h(group_x)
-        x_w = self.pool_w(group_x)
-        x_w = x_w.permute(0, 1, 3, 2)
-        hw = torch.cat([x_h, x_w], dim=2)
-        hw = self.conv1x1(hw)
-        x_h, x_w = torch.split(hw, [h, w], dim=2)
-        x_w = x_w.permute(0, 1, 3, 2)
-        x1 = self.gn(group_x * x_h.sigmoid() * x_w.sigmoid() )
-        x2 = self.conv3x3(group_x)
-        x11 = self.softmax(
-            self.agp(x1).reshape(b*self.groups, self.group_channels, 1).permute( 0, 2, 1 )
-        )
-        x12 = x2.reshape( b*self.groups, self.group_channels, h*w)
-        x21 = self.softmax(self.agp(x2).reshape(b*self.groups, self.group_channels, 1).permute(0, 2, 1))
-        x22 = x1.reshape( b*self.groups, self.group_channels, h*w)
+    def forward(self, x): 
+        b, c, h, w = x.shape 
+        group_x = x.view(b, self.groups, self.group_channels, h, w) 
         
-        weights = (torch.matmul(x11, x12)+torch.matmul(x21, x22))
-        weights = weights.reshape( b*self.groups, 1, h, w)
-        out = group_x * weights.sigmoid()
-        out = out.reshape( b, c, h, w)
-        return out
+        x_h = group_x.mean(dim=-1, keepdim=True)  
+        x_w = group_x.mean(dim=-2, keepdim=True)  
+        
+        x_h_2d = x_h.reshape(b * self.groups, self.group_channels, h, 1)
+        x_w_2d = x_w.reshape(b * self.groups, self.group_channels, w, 1)
+        
+        hw = torch.cat([x_h_2d, x_w_2d], dim=2)
+        hw = self.conv1x1(hw)
+        
+        x_h_2d, x_w_2d = torch.split(hw, [h, w], dim=2)
+        x_h = x_h_2d.view(b, self.groups, self.group_channels, h, 1).sigmoid()
+        x_w = x_w_2d.view(b, self.groups, self.group_channels, 1, w).sigmoid()
+ 
+        x1 = self.gn((group_x * x_h * x_w).view(b * self.groups, self.group_channels, h, w))
+        x2 = self.conv3x3(group_x.view(b * self.groups, self.group_channels, h, w))
+        
+        agp_x1 = x1.mean(dim=[-2, -1], keepdim=True).view(b * self.groups, self.group_channels)
+        x11 = self.softmax(agp_x1).unsqueeze(1) 
+        x12 = x2.view(b * self.groups, self.group_channels, h * w) 
+        
+        agp_x2 = x2.mean(dim=[-2, -1], keepdim=True).view(b * self.groups, self.group_channels)
+        x21 = self.softmax(agp_x2).unsqueeze(1) 
+        x22 = x1.view(b * self.groups, self.group_channels, h * w) 
+        
+        weights = torch.bmm(x11, x12) + torch.bmm(x21, x22)
+        weights = weights.view(b * self.groups, 1, h, w).sigmoid()
+        
+        out = (group_x.view(b * self.groups, self.group_channels, h, w) * weights).view(b, c, h, w) 
+        return out 
+    
+class DSConvC2fEMA(C2f):
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5): 
+        super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e) 
+        self.c = int(c2 * e) 
+        self.ema = EMA(c2, factor=8) 
+        self.m = nn.ModuleList( 
+            GhostDySnakeBottleneck(self.c, self.c) for _ in range(n) 
+        )
+
+    def forward(self, x): 
+        y = list(self.cv1(x).chunk(2, 1)) 
+        y.extend(m(y[-1]) for m in self.m) 
+        out = self.cv2(torch.cat(y, 1)) 
+        return out + self.ema(out) 
+    
 
 class EMAc2f(C2f):
     """
