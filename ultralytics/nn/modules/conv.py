@@ -9,6 +9,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torchvision.ops import deform_conv2d
+from ultralytics.utils.ops import make_divisible
 __all__ = (
     "CBAM",
     "ChannelAttention",
@@ -16,6 +18,7 @@ __all__ = (
     "Conv",
     "Conv2",
     "ConvTranspose",
+    "DSConv",
     "DySample",
     "DWConv",
     "DWConvTranspose2d",
@@ -671,66 +674,76 @@ class Index(nn.Module):
         return x[self.index]
 
 class DySample(nn.Module):
-    """Dynamic Sampling Upsampling Module.
-
-    Lightweight replacement for nn.Upsample.
-
-    Input:
-        x: Tensor of shape (B, C, H, W)
-
-    Output:
-        Tensor of shape (B, C, H * scale, W * scale)
-    """
-
+    """Optimized Dynamic Sampling Upsampling with YOLOv11 alignment standards."""
     def __init__(self, c1: int, scale: int = 2):
         super().__init__()
         assert scale > 1, "Scale factor must be greater than 1."
-
         self.scale = scale
-        self.offset_conv = nn.Conv2d(
-            in_channels=c1,
-            out_channels=2 * scale * scale,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-        )
-
-        # Initialize to zero so offsets start at identity/normal interpolation
+        self.offset_conv = nn.Conv2d(c1, 2 * scale * scale, 1, 1, 0)
         nn.init.zeros_(self.offset_conv.weight)
         nn.init.zeros_(self.offset_conv.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         s = self.scale
-
-        # Generate offsets: (B, 2*s*s, H, W)
+        
         offset = self.offset_conv(x)
-
-        # Rearrange offsets: (B, 2*s*s, H, W) -> (B, 2, H*s, W*s)
         offset = F.pixel_shuffle(offset, s)
-
-        # Permute shape to: (B, H*s, W*s, 2)
         offset = offset.permute(0, 2, 3, 1)
 
-        # Create normalized base sampling grid [-1, 1]
-        yy, xx = torch.meshgrid(
-            torch.linspace(-1, 1, H * s, device=x.device, dtype=x.dtype),
-            torch.linspace(-1, 1, W * s, device=x.device, dtype=x.dtype),
-            indexing="ij",
-        )
-        grid = torch.stack([xx, yy], dim=-1)
-        grid = grid.unsqueeze(0).repeat(B, 1, 1, 1)
-
-        # Apply learned offsets bounded to pixel scale for stability
+        yy = (torch.arange(H * s, device=x.device, dtype=x.dtype) + 0.5) / (H * s) * 2.0 - 1.0
+        xx = (torch.arange(W * s, device=x.device, dtype=x.dtype) + 0.5) / (W * s) * 2.0 - 1.0
+        yy, xx = torch.meshgrid(yy, xx, indexing="ij")
+    
+        grid = torch.stack([xx, yy], dim=-1).unsqueeze(0).expand(B, -1, -1, -1)
         grid = grid + torch.tanh(offset) * (2.0 / max(H, W))
 
-        # Dynamic bilinear sampling
         out = F.grid_sample(
-            x,
-            grid,
-            mode="bilinear",
-            padding_mode="border",
-            align_corners=True,
+            x, grid, mode="bilinear", padding_mode="border", align_corners=False
         )
-
         return out
+    
+class DSConv(nn.Module):
+    
+    def __init__(self, inc, ouc, k=3, morph=0, act=True):
+        super().__init__()
+        self.morpj = morph
+        self.k = k
+        
+        self.offset_conv = nn.Conv2d(inc, 2*k*k, 3, padding=1)
+        self.mask_conv = nn.Conv2d(inc, k*k, 3, padding=1)
+        
+        nn.init.zeros_(self.offset_conv.weight)
+        nn.init.zeros_(self.offset_conv.bias)
+        
+        self.conv = nn.Conv2d(inc, ouc, k, padding=k//2, bias=False)
+        
+        groups = make_divisible(ouc // 4, 8)
+        if groups <= 0: groups = 1
+        self.gn = nn.GroupNorm(groups, ouc)
+        self.act = nn.SiLU() if act else nn.Identity()
+        
+     
+    def forward(self, x):
+        b, c, h, w = x.shape
+        offset = self.offset_conv(x)
+        
+        offset = offset.reshape(b, 2, self.k, self.k, h, w)
+        
+        if self.morph == 0: 
+            offset[:, 1, :, :, :, :] = 0  
+            offset[:, 0, :, :, :, :] = torch.cumsum(torch.tanh(offset[:, 0, :, :, :, :]), dim=3)
+        else:
+            offset[:, 0, :, :, :, :] = 0 
+            offset[:, 1, :, :, :, :] = torch.cumsum(torch.tanh(offset[:, 1, :, :, :, :]), dim=2)
+            
+        offset = offset.reshape(b, 2 * self.k * self.k, h, w)
+        mask = self.mask_conv(x).sigmoid() 
+        
+        # CUDA deformable convolution operation
+        out = deform_conv2d(
+            x, offset, self.conv.weight, 
+            mask=mask, padding=(self.k//2, self.k//2)
+        )
+        
+        return self.act(self.gn(out))
