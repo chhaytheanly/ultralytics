@@ -1984,7 +1984,6 @@ def parse_model(d, ch, verbose=True):
             C3k2,
             RepNCSPELAN4,
             ELAN1,
-            EMA,
             EMAc2f,
             ADown,
             AConv,
@@ -2001,7 +2000,6 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
-            EMAc2f,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -2021,7 +2019,6 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             C2PSA,
             A2C2f,
-            DySample,
             DSConvC2fEMA,
             EMAc2f,
         }
@@ -2119,6 +2116,9 @@ def parse_model(d, ch, verbose=True):
             c1 = ch[f]
             args = [*args[1:]]
         elif m is DySample:
+            c2 = ch[f]
+            args = [c2, *args]
+        elif m is EMA:
             c2 = ch[f]
             args = [c2, *args]
         else:
