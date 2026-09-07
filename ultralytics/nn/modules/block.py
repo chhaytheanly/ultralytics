@@ -50,6 +50,7 @@ __all__ = (
     "ImagePoolingAttn",
     "Proto",
     "RepC3",
+    "RepBottleneck",
     "RepNCSPELAN4",
     "RepVGGDW",
     "ResNetLayer",
