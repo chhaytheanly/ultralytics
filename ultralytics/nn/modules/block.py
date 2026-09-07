@@ -2016,7 +2016,6 @@ class Proto26(Proto):
         """Fuse the model for inference by removing the semantic segmentation head."""
         self.semseg = None
 
-
 class RealNVP(nn.Module):
     """RealNVP: a flow-based generative model.
 
@@ -2095,6 +2094,19 @@ class GhostDySnakeBottleneck(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         return self.conv(x) + self.shortcut(x) 
 
+class RepBottleneck(nn.Module):
+    """
+        The Bottlenect that will learn diverse features during training, fuses to a single conv at inference.
+    """
+    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
+        super().__init__()
+        c_ = int(c2 * e)
+        self.cv1 = RepConv(c1, c_, k[0], 1, g=g, act=True)
+        self.cv2 = Conv(c_, c2, k[1], 1, g=g, act=True)
+        self.add = shortcut and c1 == c2
+    
+    def forward(self, x):
+        return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
 
 class EMA(nn.Module):
     def __init__(self, channels, factor=8):
@@ -2142,10 +2154,11 @@ class EMAc2f(C2f):
         super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
         
         self.hidden_c = self.c 
-        
-        del self.m
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1, 1)
+
         self.m = nn.ModuleList(
-            GhostBottleneck(self.hidden_c, self.hidden_c) for _ in range(n)
+            RepBottleneck(self.c, self.c, shortcut, g, k=(3, 3), e=1.0) for _ in range(n)
         )
         
         factor = 8 if c2 % 8 == 0 else (4 if c2 % 4 == 0 else 2)
