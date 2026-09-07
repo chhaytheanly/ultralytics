@@ -1,0 +1,72 @@
+# Ultralytics YOLO 🚀
+# YOLO11-Opt
+# Ghost + EMA + DySample + P2 Head
+# Optimized for real-time overlapping fastener detection on conveyor belts
+
+nc: 80
+
+scale: m
+
+scales:
+  n: [0.50, 0.25, 1024]
+  s: [0.50, 0.50, 1024]
+  m: [0.75, 0.75, 768]
+
+backbone:
+  # P1 (Stride 2)
+  - [-1, 1, Conv, [64, 3, 2]]
+
+  # P2 (Stride 4)
+  - [-1, 1, Conv, [128, 3, 2]]
+  - [-1, 2, EMAc2f, [128, True]]  # Layer 2
+
+  # P3 (Stride 8)
+  - [-1, 1, Conv, [256, 3, 2]]
+  - [-1, 2, EMAc2f, [256, True]]  # Layer 4
+
+  # P4 (Stride 16)
+  - [-1, 1, Conv, [512, 3, 2]]
+  - [-1, 3, EMAc2f, [512, True]]  # Layer 6
+
+  # P5 (Stride 32)
+  - [-1, 1, Conv, [1024, 3, 2]]
+  - [-1, 3, EMAc2f, [1024, True]] # Layer 8
+  - [-1, 1, SPPF, [1024, 5]]      # Layer 9
+
+head:
+  # ---------- Top-Down Path (P5 → P2) ----------
+  
+  # P5 → P4
+  - [-1, 1, DySample, [2]]
+  - [[-1, 6], 1, Concat, [1]]
+  - [-1, 3, EMAc2f, [512]]        # Layer 12
+
+  # P4 → P3
+  - [-1, 1, DySample, [2]]
+  - [[-1, 4], 1, Concat, [1]]
+  - [-1, 3, EMAc2f, [256]]        # Layer 15
+
+  - [-1, 1, DySample, [2]]
+  - [[-1, 2], 1, Concat, [1]]
+  - [-1, 3, EMAc2f, [128]]        # Layer 18 (P2 Output)
+
+  # ---------- Bottom-Up Path (P2 → P5) ----------
+  
+  # P2 → P3
+  - [-1, 1, Conv, [128, 3, 2]]
+  - [[-1, 15], 1, Concat, [1]]
+  - [-1, 3, EMAc2f, [256]]        # Layer 21 (P3 Output)
+
+  # P3 → P4
+  - [-1, 1, Conv, [256, 3, 2]]
+  - [[-1, 12], 1, Concat, [1]]
+  - [-1, 3, EMAc2f, [512]]        # Layer 24 (P4 Output)
+
+  # P4 → P5
+  - [-1, 1, Conv, [512, 3, 2]]
+  - [[-1, 9], 1, Concat, [1]]
+  - [-1, 3, EMAc2f, [1024]]       # Layer 27 (P5 Output)
+
+  # ---------- Detection Head ----------
+  # 4-Scale Detection: P2, P3, P4, P5
+  - [[18, 21, 24, 27], 1, Detect, [nc]]
