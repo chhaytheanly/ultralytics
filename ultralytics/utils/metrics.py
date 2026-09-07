@@ -194,7 +194,6 @@ def shape_iou(box1, box2, xywh=False, eps=1e-7):
     Expects boxes in xyxy format when xywh=False.
     """
     if xywh:
-        # Convert xywh to xyxy
         x1, y1, w1, h1 = box1.chunk(4, -1)
         x2, y2, w2, h2 = box2.chunk(4, -1)
         b1_x1, b1_y1 = x1 - w1/2, y1 - h1/2
@@ -202,7 +201,6 @@ def shape_iou(box1, box2, xywh=False, eps=1e-7):
         b2_x1, b2_y1 = x2 - w2/2, y2 - h2/2
         b2_x2, b2_y2 = x2 + w2/2, y2 + h2/2
     else:
-        # boxes in xyxy
         b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
         b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
         w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1
@@ -216,17 +214,22 @@ def shape_iou(box1, box2, xywh=False, eps=1e-7):
     union = w1 * h1 + w2 * h2 - inter + eps
     iou = inter / union
 
+    # Convex diagonal
     cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)
     ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)
     c2 = cw ** 2 + ch ** 2 + eps
+
+    # Center distance squared
     rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 + (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4
-    omega_w = torch.abs(w1 - w2) / torch.max(w1, w2, torch.tensor(eps, device=w1.device))
-    omega_h = torch.abs(h1 - h2) / torch.max(h1, h2, torch.tensor(eps, device=h1.device))
+
+    # Shape penalty (official exponential version, safe division)
+    omega_w = torch.abs(w1 - w2) / (torch.max(w1, w2) + eps)   # <-- FIXED
+    omega_h = torch.abs(h1 - h2) / (torch.max(h1, h2) + eps)   # <-- FIXED
     shape_cost = (1 - torch.exp(-omega_w)) ** 4 + (1 - torch.exp(-omega_h)) ** 4
 
     # Final Shape-IoU
     return iou - (rho2 / c2) - 0.5 * shape_cost
-
+    
 def kpt_iou(
     kpt1: torch.Tensor, kpt2: torch.Tensor, area: torch.Tensor, sigma: list[float], eps: float = 1e-7
 ) -> torch.Tensor:
