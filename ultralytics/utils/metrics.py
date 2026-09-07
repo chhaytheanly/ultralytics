@@ -196,6 +196,7 @@ def shape_iou(box1, box2, xywh=True, eps=1e-7):
         b2_x1, b2_y1 = x2 - w2 / 2, y2 - h2 / 2
         b2_x2, b2_y2 = x2 + w2 / 2, y2 + h2 / 2
     else:
+        # Boxes are in xyxy format (Ultralytics default for BboxLoss)
         b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
         b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
         w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1
@@ -207,18 +208,21 @@ def shape_iou(box1, box2, xywh=True, eps=1e-7):
 
     # Union
     union = w1 * h1 + w2 * h2 - inter + eps
-
-    # IoU
     iou = inter / union
 
-    # Shape penalty - penalizes wrong aspect ratio
-    shape_cost = torch.abs(w1 / (h1 + eps) - w2 / (h2 + eps))
+    # Convex hull for distance penalty (like CIoU)
+    cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)
+    ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)
+    c2 = cw ** 2 + ch ** 2 + eps  # convex diagonal squared
+    rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 + (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4  # center dist squared
 
-    # Scale penalty - penalizes wrong size
-    scale_cost = torch.abs(w1 * h1 - w2 * h2) / (w2 * h2 + eps)
+    # Shape penalty (aspect ratio difference)
+    shape_cost = torch.abs(w1 / (h1 + eps) - w2 / (h2 + eps)) ** 2
+    # Scale penalty (area difference)
+    scale_cost = torch.abs(w1 * h1 - w2 * h2) / ((w2 * h2) + eps) ** 2
 
-    # Combined: higher is better
-    return iou - 0.5 * shape_cost - 0.5 * scale_cost
+    # Shape-IoU = IoU - Distance Penalty - Shape/Scale Penalties
+    return iou - (rho2 / c2) - (shape_cost + scale_cost)
 
 def kpt_iou(
     kpt1: torch.Tensor, kpt2: torch.Tensor, area: torch.Tensor, sigma: list[float], eps: float = 1e-7
