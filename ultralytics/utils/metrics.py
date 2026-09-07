@@ -188,15 +188,21 @@ def mask_iou(mask1: torch.Tensor, mask2: torch.Tensor, eps: float = 1e-7) -> tor
     union = (mask1.sum(1)[:, None] + mask2.sum(1)[None]) - intersection  # (area1 + area2) - intersection
     return intersection / (union + eps)
 
-def shape_iou(box1, box2, xywh=True, eps=1e-7):
+def shape_iou(box1, box2, xywh=False, eps=1e-7):
+    """
+    Shape-IoU loss as per the official paper.
+    Expects boxes in xyxy format when xywh=False.
+    """
     if xywh:
-        (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
-        b1_x1, b1_y1 = x1 - w1 / 2, y1 - h1 / 2
-        b1_x2, b1_y2 = x1 + w1 / 2, y1 + h1 / 2
-        b2_x1, b2_y1 = x2 - w2 / 2, y2 - h2 / 2
-        b2_x2, b2_y2 = x2 + w2 / 2, y2 + h2 / 2
+        # Convert xywh to xyxy
+        x1, y1, w1, h1 = box1.chunk(4, -1)
+        x2, y2, w2, h2 = box2.chunk(4, -1)
+        b1_x1, b1_y1 = x1 - w1/2, y1 - h1/2
+        b1_x2, b1_y2 = x1 + w1/2, y1 + h1/2
+        b2_x1, b2_y1 = x2 - w2/2, y2 - h2/2
+        b2_x2, b2_y2 = x2 + w2/2, y2 + h2/2
     else:
-        # Boxes are in xyxy format (Ultralytics default for BboxLoss)
+        # boxes in xyxy
         b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
         b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
         w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1
@@ -210,19 +216,16 @@ def shape_iou(box1, box2, xywh=True, eps=1e-7):
     union = w1 * h1 + w2 * h2 - inter + eps
     iou = inter / union
 
-    # Convex hull for distance penalty (like CIoU)
     cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)
     ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)
-    c2 = cw ** 2 + ch ** 2 + eps  # convex diagonal squared
-    rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 + (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4  # center dist squared
+    c2 = cw ** 2 + ch ** 2 + eps
+    rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 + (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4
+    omega_w = torch.abs(w1 - w2) / torch.max(w1, w2, torch.tensor(eps, device=w1.device))
+    omega_h = torch.abs(h1 - h2) / torch.max(h1, h2, torch.tensor(eps, device=h1.device))
+    shape_cost = (1 - torch.exp(-omega_w)) ** 4 + (1 - torch.exp(-omega_h)) ** 4
 
-    # Shape penalty (aspect ratio difference)
-    shape_cost = torch.abs(w1 / (h1 + eps) - w2 / (h2 + eps)) ** 2
-    # Scale penalty (area difference)
-    scale_cost = torch.abs(w1 * h1 - w2 * h2) / ((w2 * h2) + eps) ** 2
-
-    # Shape-IoU = IoU - Distance Penalty - Shape/Scale Penalties
-    return iou - (rho2 / c2) - (shape_cost + scale_cost)
+    # Final Shape-IoU
+    return iou - (rho2 / c2) - 0.5 * shape_cost
 
 def kpt_iou(
     kpt1: torch.Tensor, kpt2: torch.Tensor, area: torch.Tensor, sigma: list[float], eps: float = 1e-7
