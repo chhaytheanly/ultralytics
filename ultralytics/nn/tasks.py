@@ -70,6 +70,7 @@ from ultralytics.nn.modules import (
     RepConv,
     RepNCSPELAN4,
     RepVGGDW,
+    RepBottleneck,
     ResNetLayer,
     RTDETRDecoder,
     SCDown,
