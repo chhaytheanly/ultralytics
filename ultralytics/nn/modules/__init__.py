@@ -58,6 +58,7 @@ from .block import (
     MaxSigmoidAttnBlock,
     Proto,
     RepC3,
+    RepBottleneck,
     RepNCSPELAN4,
     RepVGGDW,
     ResNetLayer,
