@@ -188,6 +188,37 @@ def mask_iou(mask1: torch.Tensor, mask2: torch.Tensor, eps: float = 1e-7) -> tor
     union = (mask1.sum(1)[:, None] + mask2.sum(1)[None]) - intersection  # (area1 + area2) - intersection
     return intersection / (union + eps)
 
+def shape_iou(box1, box2, xywh=True, eps=1e-7):
+    if xywh:
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+        b1_x1, b1_y1 = x1 - w1 / 2, y1 - h1 / 2
+        b1_x2, b1_y2 = x1 + w1 / 2, y1 + h1 / 2
+        b2_x1, b2_y1 = x2 - w2 / 2, y2 - h2 / 2
+        b2_x2, b2_y2 = x2 + w2 / 2, y2 + h2 / 2
+    else:
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
+        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1
+        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1
+
+    # Intersection
+    inter = (torch.min(b1_x2, b2_x2) - torch.max(b1_x1, b2_x1)).clamp(0) * \
+            (torch.min(b1_y2, b2_y2) - torch.max(b1_y1, b2_y1)).clamp(0)
+
+    # Union
+    union = w1 * h1 + w2 * h2 - inter + eps
+
+    # IoU
+    iou = inter / union
+
+    # Shape penalty - penalizes wrong aspect ratio
+    shape_cost = torch.abs(w1 / (h1 + eps) - w2 / (h2 + eps))
+
+    # Scale penalty - penalizes wrong size
+    scale_cost = torch.abs(w1 * h1 - w2 * h2) / (w2 * h2 + eps)
+
+    # Combined: higher is better
+    return iou - 0.5 * shape_cost - 0.5 * scale_cost
 
 def kpt_iou(
     kpt1: torch.Tensor, kpt2: torch.Tensor, area: torch.Tensor, sigma: list[float], eps: float = 1e-7
