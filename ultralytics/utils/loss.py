@@ -131,7 +131,7 @@ class BboxLoss(nn.Module):
         """Compute IoU and DFL losses for bounding boxes."""
         weight = target_scores[fg_mask].sum(-1, keepdim=True)
         # iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
-        iou = shape_iou(pred_bboxes.unsqueeze(1), target_bboxes.unsqueeze(0), xywh=True).squeeze(2)
+        iou = shape_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False)
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
