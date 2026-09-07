@@ -672,41 +672,79 @@ class Index(nn.Module):
             (torch.Tensor): Selected tensor.
         """
         return x[self.index]
-        
+
+
 class DySample(nn.Module):
-    def __init__(self, c1: int, scale: int = 2):
+    """
+        Dynamic Sampling Upsampling Module.
+
+        Lightweight learned upsampling using dynamically predicted offsets.
+
+        Input:
+            x: Tensor [B, C, H, W]
+
+        Output:
+            Tensor [B, C, H*scale, W*scale]
+    """
+
+    def __init__(self, c1: int, scale: int = 2, max_size: int = 1024):
         super().__init__()
-        assert scale > 1, "Scale factor must be greater than 1."
+
+        if scale < 2:
+            raise ValueError("DySample scale must be >= 2")
+
         self.scale = scale
-        self.offset_conv = nn.Conv2d(in_channels=c1, out_channels=2 * scale * scale, kernel_size=1, stride=1, padding=0)
+    
+        self.offset_conv = nn.Conv2d(
+            c1,
+            2 * scale * scale,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+        )
+
         nn.init.zeros_(self.offset_conv.weight)
         nn.init.zeros_(self.offset_conv.bias)
+
+        self.offset_scale = nn.Parameter(torch.tensor(0.5))
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1.0, 1.0, max_size * scale, dtype=torch.float32),
+            torch.linspace(-1.0, 1.0, max_size * scale, dtype=torch.float32),
+            indexing="ij",
+        )
         
-        self._grid = {}
-        
+        base_grid_template = torch.stack([xx, yy], dim=-1).unsqueeze(0)
+        self.register_buffer("base_grid_template", base_grid_template)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         s = self.scale
-        offset = self.offset_conv(x)
-        offset = F.pixel_shuffle(offset, s).permute(0, 2, 3, 1)
-
-        hw = (H * s, W * s)
-        cache_key = (hw, x.device)
-        if cache_key not in self._grid:  
-            yy, xx = torch.meshgrid(
-                torch.linspace(-1, 1, H * s, device=x.device, dtype=x.dtype),
-                torch.linspace(-1, 1, W * s, device=x.device, dtype=x.dtype),
-                indexing="ij",
-            )
-            self._grid[cache_key] = torch.stack([xx, yy], dim=-1).unsqueeze(0)
+        target_h, target_w = H * s, W * s
         
-        base_grid = self._grid[cache_key]
-        if base_grid.shape[0] != B:
-            base_grid = base_grid.expand(B, -1, -1, -1)
+        offset = self.offset_conv(x)                   
+        offset = F.pixel_shuffle(offset, s)             
+        offset = offset.permute(0, 2, 3, 1).contiguous() 
+        
+        base_grid = F.interpolate(
+            self.base_grid_template.permute(0, 3, 1, 2), 
+            size=(target_h, target_w), 
+            mode='bilinear', 
+            align_corners=True
+        )
+        
+        base_grid = base_grid.permute(0, 2, 3, 1).expand(B, -1, -1, -1)
+        max_offset = 2.0 / max(H, W)
+        offset = torch.tanh(offset) * self.offset_scale.abs() * max_offset
+        grid = base_grid + offset
 
-        grid = base_grid + torch.tanh(offset) * (2.0 / max(H, W))
-        return F.grid_sample(x, grid, mode="bilinear", padding_mode="border", align_corners=True)
-    
+        return F.grid_sample(
+            x,
+            grid,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=True,
+        )
+
 class DSConv(nn.Module):
     
     def __init__(self, inc, ouc, k=3, morph=0, act=True):
