@@ -1,0 +1,64 @@
+# Ultralytics YOLO 🚀
+# YOLO11-Fastener-RepEMA-P2
+# RepBottleneck + EMA + DySample + P2 Head
+# Optimized for industrial fastener detection (small, dense, occluded)
+
+nc: 80  
+
+# Backbone
+backbone:
+  # P1
+  - [-1, 1, Conv, [64, 3, 2]]                     # 0
+  
+  # P2 (Upgraded to EMAc2f for early small-object feature extraction)
+  - [-1, 1, Conv, [128, 3, 2]]                    # 1
+  - [-1, 2, EMAc2f, [128, True]]                  # 2 (P2 Backbone Output)
+
+  # P3 (Upgraded to EMAc2f)
+  - [-1, 1, Conv, [256, 3, 2]]                    # 3
+  - [-1, 2, EMAc2f, [256, True]]                  # 4 (P3 Backbone Output)
+
+  # P4
+  - [-1, 1, Conv, [512, 3, 2]]                    # 5
+  - [-1, 3, EMAc2f, [512, True]]                  # 6 (P4 Backbone Output)
+
+  # P5
+  - [-1, 1, Conv, [1024, 3, 2]]                   # 7
+  - [-1, 3, EMAc2f, [1024, True]]                 # 8
+  - [-1, 1, SPPF, [1024, 5]]                      # 9 (SPPF Output)
+
+# Head (Neck + Detection)
+head:
+  # ---------- Top-Down Path (P5 -> P4 -> P3 -> P2) ----------
+  
+  # P5 to P4
+  - [-1, 1, DySample, [2]]                        # 10 (Upsample P5)
+  - [[-1, 6], 1, Concat, [1]]                     # 11 (Concat with P4 Backbone)
+  - [-1, 3, EMAc2f, [512, True]]                  # 12 (P4 Neck)
+
+  # P4 to P3
+  - [-1, 1, DySample, [2]]                        # 13 (Upsample P4 Neck)
+  - [[-1, 4], 1, Concat, [1]]                     # 14 (Concat with P3 Backbone)
+  - [-1, 2, EMAc2f, [256, True]]                  # 15 (P3 Neck)
+
+  # P3 to P2 (NEW: High-resolution path for small/dense fasteners)
+  - [-1, 1, DySample, [2]]                        # 16 (Upsample P3 Neck)
+  - [[-1, 2], 1, Concat, [1]]                     # 17 (Concat with P2 Backbone)
+  - [-1, 2, EMAc2f, [128, True]]                  # 18 (P2 Neck Output)
+
+  # ---------- Bottom-Up Path (P2 -> P3 -> P4) ----------
+  
+  # P2 to P3
+  - [-1, 1, Conv, [256, 3, 2]]                    # 19 (Downsample P2)
+  - [[-1, 15], 1, Concat, [1]]                    # 20 (Concat with P3 Neck)
+  - [-1, 2, EMAc2f, [256, True]]                  # 21 (P3 Final Output)
+
+  # P3 to P4
+  - [-1, 1, Conv, [512, 3, 2]]                    # 22 (Downsample P3)
+  - [[-1, 12], 1, Concat, [1]]                    # 23 (Concat with P4 Neck)
+  - [-1, 3, EMAc2f, [512, True]]                  # 24 (P4 Final Output)
+
+  # ---------- Detection Head ----------
+  # Detect ONLY on P2 (18), P3 (21), and P4 (24). 
+  # We intentionally dropped P5 to prevent merging of small, dense fasteners.
+  - [[18, 21, 24], 1, Detect, [nc]]               # 25
