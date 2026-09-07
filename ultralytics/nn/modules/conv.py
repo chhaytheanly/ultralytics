@@ -672,36 +672,40 @@ class Index(nn.Module):
             (torch.Tensor): Selected tensor.
         """
         return x[self.index]
-
+        
 class DySample(nn.Module):
-    """Optimized Dynamic Sampling Upsampling with YOLOv11 alignment standards."""
     def __init__(self, c1: int, scale: int = 2):
         super().__init__()
         assert scale > 1, "Scale factor must be greater than 1."
         self.scale = scale
-        self.offset_conv = nn.Conv2d(c1, 2 * scale * scale, 1, 1, 0)
+        self.offset_conv = nn.Conv2d(in_channels=c1, out_channels=2 * scale * scale, kernel_size=1, stride=1, padding=0)
         nn.init.zeros_(self.offset_conv.weight)
         nn.init.zeros_(self.offset_conv.bias)
-
+        
+        self._grid = {}
+        
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         s = self.scale
-        
         offset = self.offset_conv(x)
-        offset = F.pixel_shuffle(offset, s)
-        offset = offset.permute(0, 2, 3, 1)
+        offset = F.pixel_shuffle(offset, s).permute(0, 2, 3, 1)
 
-        yy = (torch.arange(H * s, device=x.device, dtype=x.dtype) + 0.5) / (H * s) * 2.0 - 1.0
-        xx = (torch.arange(W * s, device=x.device, dtype=x.dtype) + 0.5) / (W * s) * 2.0 - 1.0
-        yy, xx = torch.meshgrid(yy, xx, indexing="ij")
-    
-        grid = torch.stack([xx, yy], dim=-1).unsqueeze(0).expand(B, -1, -1, -1)
-        grid = grid + torch.tanh(offset) * (2.0 / max(H, W))
+        hw = (H * s, W * s)
+        cache_key = (hw, x.device)
+        if cache_key not in self._grid:  
+            yy, xx = torch.meshgrid(
+                torch.linspace(-1, 1, H * s, device=x.device, dtype=x.dtype),
+                torch.linspace(-1, 1, W * s, device=x.device, dtype=x.dtype),
+                indexing="ij",
+            )
+            self._grid[cache_key] = torch.stack([xx, yy], dim=-1).unsqueeze(0)
+        
+        base_grid = self._grid[cache_key]
+        if base_grid.shape[0] != B:
+            base_grid = base_grid.expand(B, -1, -1, -1)
 
-        out = F.grid_sample(
-            x, grid, mode="bilinear", padding_mode="border", align_corners=False
-        )
-        return out
+        grid = base_grid + torch.tanh(offset) * (2.0 / max(H, W))
+        return F.grid_sample(x, grid, mode="bilinear", padding_mode="border", align_corners=True)
     
 class DSConv(nn.Module):
     
