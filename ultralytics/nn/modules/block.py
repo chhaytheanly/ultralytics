@@ -2109,34 +2109,33 @@ class RepBottleneck(nn.Module):
     def forward(self, x):
         return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
 
-
 class EMA(nn.Module):
     """
-    Efficient Multi-scale Attention.
+    Efficient Multi-Scale Attention.
 
-    Applies grouped spatial/channel attention.
-
-    Input:
-        x: [B, C, H, W]
-
-    Output:
-        x: [B, C, H, W]
+    Lightweight grouped spatial-channel attention
+    for industrial object detection.
     """
 
-    def __init__(self, channels: int, factor: int = 8):
+    def __init__(self, channels, factor=8):
         super().__init__()
-        factor = min(factor, channels)
 
-        while factor > 1 and channels % factor != 0:
-            factor //= 2
+        assert channels % factor == 0, (
+            f"EMA requires channels divisible by factor. "
+            f"Got channels={channels}, factor={factor}"
+        )
 
         self.groups = factor
         self.channels = channels
         self.group_channels = channels // factor
+
         self.softmax = nn.Softmax(dim=-1)
+
         self.agp = nn.AdaptiveAvgPool2d(1)
+
         self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
         self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+
         self.conv1x1 = nn.Conv2d(
             self.group_channels,
             self.group_channels,
@@ -2153,125 +2152,127 @@ class EMA(nn.Module):
             padding=1,
         )
 
-        if self.group_channels % 8 == 0:
-            gn_groups = 8
-        elif self.group_channels % 4 == 0:
-            gn_groups = 4
-        elif self.group_channels % 2 == 0:
-            gn_groups = 2
-        else:
-            gn_groups = 1
+        # More flexible normalization than
+        # num_groups == num_channels.
+        gn_groups = min(32, self.group_channels)
+
+        while self.group_channels % gn_groups != 0:
+            gn_groups //= 2
 
         self.gn = nn.GroupNorm(
             num_groups=gn_groups,
             num_channels=self.group_channels,
         )
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x):
 
-        B, C, H, W = x.shape
+        b, c, h, w = x.shape
+
+        # Group features
         group_x = x.reshape(
-            B * self.groups,
+            b * self.groups,
             self.group_channels,
-            H,
-            W,
+            h,
+            w,
         )
-        
+
+        # Coordinate pooling
         x_h = self.pool_h(group_x)
 
-        x_w = self.pool_w(group_x).permute(
-            0,
-            1,
-            3,
-            2,
+        x_w = self.pool_w(group_x)
+        x_w = x_w.permute(0, 1, 3, 2)
+
+        hw = torch.cat(
+            [x_h, x_w],
+            dim=2,
         )
 
-        hw = self.conv1x1(
-            torch.cat(
-                [x_h, x_w],
-                dim=2,
-            )
-        )
+        hw = self.conv1x1(hw)
 
         x_h, x_w = torch.split(
             hw,
-            [H, W],
+            [h, w],
             dim=2,
         )
 
         x_w = x_w.permute(
-            0,
-            1,
-            3,
-            2,
+            0, 1, 3, 2
         )
 
+        # Spatially gated branch
         x1 = self.gn(
             group_x
             * x_h.sigmoid()
             * x_w.sigmoid()
         )
 
+        # Local convolution branch
         x2 = self.conv3x3(group_x)
-        x11 = self.agp(x1).reshape(
-            B * self.groups,
-            self.group_channels,
-            1,
-        ).permute(0, 2, 1)
 
-        x11 = self.softmax(x11)
+        # Cross attention
+        x11 = self.softmax(
+            self.agp(x1)
+            .reshape(
+                b * self.groups,
+                self.group_channels,
+                1,
+            )
+            .permute(0, 2, 1)
+        )
 
         x12 = x2.reshape(
-            B * self.groups,
+            b * self.groups,
             self.group_channels,
-            H * W,
+            h * w,
         )
 
-        x21 = self.agp(x2).reshape(
-            B * self.groups,
-            self.group_channels,
-            1,
-        ).permute(0, 2, 1)
-
-        x21 = self.softmax(x21)
+        x21 = self.softmax(
+            self.agp(x2)
+            .reshape(
+                b * self.groups,
+                self.group_channels,
+                1,
+            )
+            .permute(0, 2, 1)
+        )
 
         x22 = x1.reshape(
-            B * self.groups,
+            b * self.groups,
             self.group_channels,
-            H * W,
+            h * w,
         )
 
-        weights = torch.matmul(
-            x11,
-            x12,
-        ) + torch.matmul(
-            x21,
-            x22,
+        weights = (
+            torch.matmul(x11, x12)
+            + torch.matmul(x21, x22)
         )
 
         weights = weights.reshape(
-            B * self.groups,
+            b * self.groups,
             1,
-            H,
-            W,
+            h,
+            w,
         )
 
-        weights = weights.sigmoid()
-        out = group_x * weights
+        out = (
+            group_x
+            * weights.sigmoid()
+        )
 
         return out.reshape(
-            B,
-            C,
-            H,
-            W,
+            b,
+            c,
+            h,
+            w,
         )
         
 class EMAc2f(C2f):
     """
-    C2f module with GhostBottlenecks and EMA (Efficient Multi-scale Attention).
-    Features a learnable residual weight (alpha) that starts at 0.
+    C2f with GhostBottleneck and adaptive EMA residual attention.
+
+    Designed for efficient industrial object detection.
     """
-    
+
     def __init__(
         self,
         c1,
@@ -2290,32 +2291,46 @@ class EMAc2f(C2f):
             e=e,
         )
 
+        self.c = int(c2 * e)
+
+        self.ema = EMA(
+            c2,
+            factor=8,
+        )
+
+        # Learn how strongly EMA should contribute.
+        # Starts as the original C2f behavior.
+        self.ema_alpha = nn.Parameter(
+            torch.tensor(0.0)
+        )
+
         self.m = nn.ModuleList(
             GhostBottleneck(
-                self.c, 
+                self.c,
                 self.c,
             )
             for _ in range(n)
         )
-    
-        if c2 % 8 == 0:
-            factor = 8
-        elif c2 % 4 == 0:
-            factor = 4
-        elif c2 % 2 == 0:
-            factor = 2
-        else:
-            factor = 1
-
-        self.ema = EMA(channels=c2, factor=factor)
-        self.alpha = nn.Parameter(torch.zeros(1))
 
     def forward(self, x):
-        y = list(self.cv1(x).chunk(2, 1))
-        y.extend(m(y[-1]) for m in self.m)
-        out = self.cv2(torch.cat(y, 1))
-        
-        return out + self.alpha * self.ema(out)
+
+        y = list(
+            self.cv1(x).chunk(2, 1)
+        )
+
+        y.extend(
+            m(y[-1])
+            for m in self.m
+        )
+
+        out = self.cv2(
+            torch.cat(y, 1)
+        )
+
+        return (
+            out
+            + self.ema_alpha * self.ema(out)
+        )
 
 # class EMAc2f(C2f):
 #     def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
