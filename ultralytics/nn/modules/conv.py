@@ -673,28 +673,25 @@ class Index(nn.Module):
         """
         return x[self.index]
 
-
 class DySample(nn.Module):
     """
-        Dynamic Sampling Upsampling Module.
+    Lightweight Dynamic Sampling module.
 
-        Lightweight learned upsampling using dynamically predicted offsets.
-
-        Input:
-            x: Tensor [B, C, H, W]
-
-        Output:
-            Tensor [B, C, H*scale, W*scale]
+    Predicts small spatial offsets and performs
+    bilinear feature reconstruction.
     """
 
-    def __init__(self, c1: int, scale: int = 2, max_size: int = 1024):
+    def __init__(
+        self,
+        c1: int,
+        scale: int = 2,
+    ):
         super().__init__()
 
-        if scale < 2:
-            raise ValueError("DySample scale must be >= 2")
+        assert scale > 1
 
         self.scale = scale
-    
+
         self.offset_conv = nn.Conv2d(
             c1,
             2 * scale * scale,
@@ -703,43 +700,98 @@ class DySample(nn.Module):
             padding=0,
         )
 
-        nn.init.zeros_(self.offset_conv.weight)
-        nn.init.zeros_(self.offset_conv.bias)
+        # Identity initialization:
+        # start from normal interpolation.
+        nn.init.zeros_(
+            self.offset_conv.weight
+        )
 
-        self.offset_scale = nn.Parameter(torch.tensor(0.5))
+        nn.init.zeros_(
+            self.offset_conv.bias
+        )
+
+    def forward(self, x):
+
+        B, C, H, W = x.shape
+
+        s = self.scale
+
+        # --------------------------------
+        # Predict offsets
+        # --------------------------------
+
+        offset = self.offset_conv(x)
+        offset = F.pixel_shuffle(
+            offset,
+            s,
+        )
+
+        offset = offset.permute(
+            0, 2, 3, 1
+        )
+
+        # --------------------------------
+        # Base grid
+        # --------------------------------
+
+        out_h = H * s
+        out_w = W * s
+
         yy, xx = torch.meshgrid(
-            torch.linspace(-1.0, 1.0, max_size * scale, dtype=torch.float32),
-            torch.linspace(-1.0, 1.0, max_size * scale, dtype=torch.float32),
+            torch.linspace(
+                -1,
+                1,
+                out_h,
+                device=x.device,
+                dtype=x.dtype,
+            ),
+            torch.linspace(
+                -1,
+                1,
+                out_w,
+                device=x.device,
+                dtype=x.dtype,
+            ),
             indexing="ij",
         )
-        
-        base_grid_template = torch.stack([xx, yy], dim=-1).unsqueeze(0)
-        self.register_buffer("base_grid_template", base_grid_template)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
-        s = self.scale
-        target_h, target_w = H * s, W * s
-        
-        offset = self.offset_conv(x)                   
-        offset = F.pixel_shuffle(offset, s)             
-        offset = offset.permute(0, 2, 3, 1).contiguous() 
-        
-        base_grid = F.interpolate(
-            self.base_grid_template.permute(0, 3, 1, 2), 
-            size=(target_h, target_w), 
-            mode='bilinear', 
-            align_corners=True
+        grid = torch.stack(
+            [xx, yy],
+            dim=-1,
         )
-        
-        base_grid = base_grid.permute(0, 2, 3, 1).expand(B, -1, -1, -1)
-        max_offset = 2.0 / max(H, W)
-        offset = torch.tanh(offset) * self.offset_scale.abs() * max_offset
-        grid = base_grid + offset
+
+        grid = grid.unsqueeze(0)
+
+        # --------------------------------
+        # Offset normalization
+        # --------------------------------
+
+        offset = torch.tanh(offset)
+
+        offset_x = (
+            offset[..., 0]
+            * (2.0 / max(W, 1))
+        )
+
+        offset_y = (
+            offset[..., 1]
+            * (2.0 / max(H, 1))
+        )
+
+        offset = torch.stack(
+            [offset_x, offset_y],
+            dim=-1,
+        )
+
+        grid = grid + offset
+
+        # --------------------------------
+        # Dynamic sampling
+        # --------------------------------
 
         return F.grid_sample(
             x,
-            grid,
+            grid.expand(B, -1, -1, -1),
             mode="bilinear",
             padding_mode="border",
             align_corners=True,
